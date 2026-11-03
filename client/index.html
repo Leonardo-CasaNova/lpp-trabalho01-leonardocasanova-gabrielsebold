@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Vila em Tempo Real</title>
+  <title>Vila de Alquimia</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 580px; margin: 24px auto; padding: 0 12px; }
     .cartao, .painel { border: 1px solid #ccc; border-radius: 8px; padding: 12px; margin: 12px 0; }
@@ -43,7 +43,7 @@
 
   <!-- Tela de entrada -->
   <section v-if="!conectado" class="cartao">
-    <h1>🏘️ Vila em Tempo Real</h1>
+    <h1>⚗️ Vila de Alquimia</h1>
     <input v-model="nome" placeholder="Seu nome">
     <button @click="entrar('mestre')">Entrar como Mestre</button>
     <button @click="entrar('jogador')">Entrar como Jogador</button>
@@ -51,17 +51,19 @@
 
   <!-- Tela da vila -->
   <main v-else>
-    <h1>🏘️ Vila</h1>
+    <h1>⚗️ Vila de Alquimia</h1>
     <p>{{ papel }}: <strong>{{ nome || "Anônimo" }}</strong> · Temporada: <strong>{{ estado.fase }}</strong></p>
 
     <!-- A vila desenhada pelo Phaser aparece aqui -->
     <div id="jogo"></div>
 
     <section class="painel">
-      <p>🪵 Toras: <strong>{{ estado.toras }}</strong> (+{{ porMinuto }}/min)</p>
-      <p>👷 Trabalhadores: {{ estado.trabalhadores }}/{{ estado.limite }}
+      <p>🌿 Ervas: <strong>{{ estado.ervas }}</strong> (+{{ porMinuto }}/min)</p>
+      <p>🧪 Poções: <strong>{{ estado.pocoes }}</strong> (+{{ estado.concluidas }} por colheita)</p>
+      <p>🧙 Alquimistas: {{ estado.trabalhadores }}/{{ estado.limite }}
         <progress :value="estado.trabalhadores" :max="estado.limite"></progress></p>
-      <p>🏠 Construções: {{ estado.concluidas }} concluídas, {{ estado.em_obra }} em obra</p>
+      <p>⚗️ Laboratórios: {{ estado.concluidas }} prontos, {{ estado.em_obra }} em obra</p>
+      <p>💥 Poção instável: <strong>{{ estado.instavel ? "borbulhando! estabilize em até " + estado.prazo_instavel + " s" : "nenhuma" }}</strong></p>
     </section>
 
     <section>
@@ -69,7 +71,11 @@
         <button @click="abrirVila">Abrir temporada</button>
         <button @click="encerrarVila">Encerrar temporada</button>
       </template>
-      <button v-else @click="construir">🔨 Construir (custo {{ estado.custo }} toras)</button>
+      <template v-else>
+        <button @click="construir">🔨 Construir laboratório ({{ estado.custo }} 🌿)</button>
+        <button v-if="!estado.instavel" @click="prepararInstavel">💥 Preparar poção instável ({{ estado.custo_instavel }} 🌿)</button>
+        <button v-else @click="estabilizar">🧊 Estabilizar poção</button>
+      </template>
     </section>
 
     <ul class="avisos">
@@ -88,7 +94,7 @@
         <span v-for="(n, nome) in contadores" class="chip">{{ nome }} ×{{ n }}</span>
        </div>
 
-      <label><input type="checkbox" v-model="ocultarProducao"> ocultar recurso.produzido (é muito frequente)</label>
+      <label><input type="checkbox" v-model="ocultarProducao"> ocultar ervas.colhidas (é muito frequente)</label>
       <ul>
         <li v-for="e in eventosVisiveis" :class="e.tipo">
           <span class="badge" :class="e.sentido === 'enviado' ? 'emit' : 'on'">{{ e.sentido === 'enviado' ? '⬆ emit' : '⬇ on' }}</span>
@@ -102,7 +108,7 @@
     </section>
   </main>
 
-  <footer>Desenvolvido por: [Nome do(a) Aluno(a)]</footer>
+  <footer>Desenvolvido por: Leonardo Casa Nova e Gabriel Sebold</footer>
 </div>
 
 <script src="https://unpkg.com/vue@3.5.13/dist/vue.global.js"></script>
@@ -139,11 +145,11 @@
         mapa.createLayer("chao", tileset);
         mapa.createLayer("decoracao", tileset);
 
-        // 2) pontos marcados no mapa: onde ficam as obras e o acampamento de lenha
+        // 2) pontos marcados no mapa: onde ficam os laboratórios e a estufa de ervas
         const pontos = mapa.getObjectLayer("pontos").objects;
         this.lotes = pontos.filter((p) => p.name.startsWith("lote"))
           .sort((a, b) => a.name.localeCompare(b.name, "pt", { numeric: true }));
-        this.acampamento = pontos.find((p) => p.name === "acampamento");
+        this.estufa = pontos.find((p) => p.name === "estufa");
 
         // 3) câmera: o mapa é pequeno (pixel art), então damos zoom 2x
         this.cameras.main.setZoom(2).centerOn(mapa.widthInPixels / 2, mapa.heightInPixels / 2);
@@ -152,7 +158,7 @@
 
         this.obras = [];      // obras em andamento (a primeira a começar é a primeira a terminar)
         this.usados = 0;      // quantos lotes já foram usados
-        this.faixa = this.add.text(this.larg / 2, 9, "⏳ Aguardando o Mestre", {
+        this.faixa = this.add.text(this.larg / 2, 9, "⏳ Aguardando o Mestre Alquimista", {
           fontSize: "8px", color: "#ffffff", backgroundColor: "#00000099",
           padding: { x: 5, y: 2 }, resolution: 2,
         }).setOrigin(0.5).setDepth(10);
@@ -192,24 +198,40 @@
         }
         for (let i = 0; i < estado.em_obra; i++) this.criarObra(estado.tempo_obra * 1000);
         if (estado.fase === "aberta") this.vilaIniciada();
+        if (estado.fase === "aberta" && estado.instavel) this.pocaoInstavel(estado);
         if (estado.fase === "encerrada") this.vilaEncerrada();
       }
       vilaIniciada() {                        // vila.iniciada
-        this.faixa.setText("☀️ Temporada aberta");
+        this.faixa.setText("🌿 Temporada de colheita aberta");
       }
-      obraIniciada(estado) {                  // construcao.iniciada
+      obraIniciada(estado) {                  // laboratorio.iniciado
         this.criarObra(estado.tempo_obra * 1000);
-        this.flutuar("-" + estado.custo + " 🪵", this.acampamento.x, this.acampamento.y, "#b00020");
+        this.flutuar("-" + estado.custo + " 🌿", this.estufa.x, this.estufa.y, "#b00020");
       }
-      obraConcluida(estado) {                 // construcao.concluida
+      obraConcluida(estado) {                 // laboratorio.concluido
         const obra = this.obras.shift();
         if (!obra) return;
         obra.canteiro.destroy(); obra.fundo.destroy(); obra.barra.destroy();
         this.criarCasa(obra.x, obra.y);
-        this.flutuar("🏠 Obra concluída!", obra.x, obra.y - 18, "#1b5e20");
+        this.flutuar("⚗️ Laboratório pronto!", obra.x, obra.y - 18, "#1b5e20");
       }
-      recursoProduzido(estado) {              // recurso.produzido
-        this.flutuar("+" + estado.producao + " 🪵", this.acampamento.x, this.acampamento.y, "#1b5e20");
+      recursoProduzido(estado) {              // ervas.colhidas
+        this.flutuar("+" + estado.producao + " 🌿", this.estufa.x, this.estufa.y, "#1b5e20");
+        if (estado.concluidas > 0) this.flutuar("🧪", this.larg / 2, 40, "#6a1b9a");
+      }
+      pocaoInstavel(estado) {                 // pocao_instavel.preparada
+        this.flutuar("-" + estado.custo_instavel + " 🌿", this.estufa.x, this.estufa.y, "#b00020");
+        this.faixa.setText("💥 Poção instável! Estabilize em " + estado.prazo_instavel + " s");
+        this.faixa.setBackgroundColor("#6a1b9acc");
+      }
+      pocaoEstabilizada() {                   // pocao_instavel.estabilizada
+        this.faixa.setText("🌿 Temporada de colheita aberta").setBackgroundColor("#00000099");
+        this.flutuar("🧊 +3 🧪", this.larg / 2, this.alt / 2, "#1b5e20");
+      }
+      pocaoExpirada() {                       // pocao_instavel.expirada
+        this.faixa.setText("🌿 Temporada de colheita aberta").setBackgroundColor("#00000099");
+        this.cameras.main.flash(300, 160, 60, 200);
+        this.flutuar("💨 A poção expirou!", this.larg / 2, this.alt / 2, "#b00020");
       }
       recusado(motivo) {                      // operacao.recusada (só quem pediu)
         this.cameras.main.shake(180, 0.006);
@@ -234,6 +256,9 @@
       obraIniciada: (...a) => chamar("obraIniciada", ...a),
       obraConcluida: (...a) => chamar("obraConcluida", ...a),
       recursoProduzido: (...a) => chamar("recursoProduzido", ...a),
+      pocaoInstavel: (...a) => chamar("pocaoInstavel", ...a),
+      pocaoEstabilizada: (...a) => chamar("pocaoEstabilizada", ...a),
+      pocaoExpirada: (...a) => chamar("pocaoExpirada", ...a),
       recusado: (...a) => chamar("recusado", ...a),
       vilaEncerrada: (...a) => chamar("vilaEncerrada", ...a),
     };
@@ -252,15 +277,16 @@
       const papel = ref("");
       const conectado = ref(false);
       const estado = reactive({
-        fase: "aguardando", toras: 0, trabalhadores: 0, limite: 0,
+        fase: "aguardando", ervas: 0, pocoes: 0, trabalhadores: 0, limite: 0,
         producao: 0, intervalo: 0, tempo_obra: 0, custo: 0, concluidas: 0, em_obra: 0,
+        instavel: false, custo_instavel: 0, prazo_instavel: 0,
       });
       const avisos = ref([]);
       const eventos = ref([]);              // linha do tempo do painel de eventos
       const contadores = reactive({});      // quantas vezes cada evento ocorreu
       const ocultarProducao = ref(false);
       const eventosVisiveis = computed(() =>
-        eventos.value.filter((e) => !(ocultarProducao.value && e.nome === "recurso.produzido")));
+        eventos.value.filter((e) => !(ocultarProducao.value && e.nome === "ervas.colhidas")));
       const jogo = criarJogo();      // a vila desenhada (Phaser)
       let socket = null;
 
@@ -281,7 +307,7 @@
         if (!d) return "";
         const { estado: e, causa, ...resto } = d;
         const partes = Object.entries(resto).map(([k, v]) => k + ": " + v);
-        if (e) partes.push("toras " + e.toras + ", trabalhadores " + e.trabalhadores + "/" + e.limite);
+        if (e) partes.push("ervas " + e.ervas + ", poções " + e.pocoes + ", alquimistas " + e.trabalhadores + "/" + e.limite);
         return partes.join(" · ");
       }
       function registrar(sentido, nome, dados, reacao = "") {
@@ -313,50 +339,72 @@
         // ===== ESCUTAS (on): o cliente reage aos FATOS do servidor =====
         // ouvir(evento, "o que o cliente faz ao receber", função)
         // ETAPA 1: ouvir "estado.sincronizado"   -> jogo.mostrarEstado(...)
-        ouvir("estado.sincronizado", "guarda o estado e desenha a vila", (d) => {
+        // Por quê: quem acabou de entrar não sabe o que já aconteceu; o servidor manda o estado atual
+        ouvir("estado.sincronizado", "guarda o estado e desenha os laboratórios da vila", (d) => {
           atualizar(d);
           jogo.mostrarEstado(d.estado);
         });
 
         // ETAPA 2: ouvir "vila.iniciada"         -> jogo.vilaIniciada()
-        ouvir("vila.iniciada", "muda a faixa para temporada aberta", (d) => {
+        // Por quê: só o servidor decide quando a temporada abre; todos reagem ao mesmo fato
+        ouvir("vila.iniciada", "muda a faixa para temporada de colheita aberta", (d) => {
           atualizar(d);
-          avisar("A temporada começou!", "ok");
+          avisar("A temporada de colheita começou!", "ok");
           jogo.vilaIniciada();
         });
 
-        // ETAPA 3: ouvir "construcao.iniciada"   -> jogo.obraIniciada(...)
-        ouvir("construcao.iniciada", "mostra o canteiro de obras", (d) => {
+        // ETAPA 3: ouvir "laboratorio.iniciado"  -> jogo.obraIniciada(...)
+        // Por quê: a obra pode ter sido pedida por OUTRO jogador; todas as telas desenham a mesma obra
+        ouvir("laboratorio.iniciado", "desconta 40 ervas, ocupa um alquimista e mostra a obra do laboratório", (d) => {
           atualizar(d);
-          avisar(d.por + " iniciou uma obra");
+          avisar(d.por + " começou a construir um laboratório");
           jogo.obraIniciada(d.estado);
         });
 
-
         // ETAPA 4: ouvir "operacao.recusada"     -> jogo.recusado(...)
-        ouvir("operacao.recusada", "avisa o motivo e a tela treme", (d) => {
+        // Por quê: o cliente não valida nada sozinho; só o servidor sabe se havia ervas e alquimistas
+        ouvir("operacao.recusada", "avisa o motivo e a tela treme (nada muda no estado)", (d) => {
           avisar(d.motivo, "erro");
           jogo.recusado(d.motivo);
         });
 
-
-        // ETAPA 5: ouvir "recurso.produzido"     -> jogo.recursoProduzido(...)
-
-        ouvir("recurso.produzido", "atualiza as toras e mostra o +N", (d) => {
+        // ETAPA 5: ouvir "ervas.colhidas"        -> jogo.recursoProduzido(...)
+        // Por quê: a colheita vem do temporizador do servidor, sem clique; o cliente só reage
+        ouvir("ervas.colhidas", "soma as ervas colhidas, mostra o +N e as poções feitas nos laboratórios", (d) => {
           atualizar(d);
           jogo.recursoProduzido(d.estado);
         });
 
-        //          e "construcao.concluida"      -> jogo.obraConcluida(...)
-
-        ouvir("construcao.concluida", "transforma o canteiro em casa", (d) => {
+        //          e "laboratorio.concluido"     -> jogo.obraConcluida(...)
+        // Por quê: o fim da obra é decidido pelo tempo no servidor, então todos veem o laboratório pronto juntos
+        ouvir("laboratorio.concluido", "libera o alquimista, desenha o laboratório pronto e aumenta a colheita", (d) => {
           atualizar(d);
-          avisar("Obra de " + d.por + " concluída! A produção aumentou.", "ok");
+          avisar("Laboratório de " + d.por + " pronto! Colheita +4 e +1 poção por colheita.", "ok");
           jogo.obraConcluida(d.estado);
         });
 
+        // Evento próprio: poção instável com prazo
+        // Por quê: qualquer alquimista pode estabilizar, então todos precisam ver o alerta;
+        // a expiração vem do temporizador do servidor e tira o alerta de todas as telas
+        ouvir("pocao_instavel.preparada", "desconta 20 ervas e mostra o alerta com o prazo para estabilizar", (d) => {
+          atualizar(d);
+          avisar(d.por + " preparou uma poção instável! Estabilize em " + d.estado.prazo_instavel + " s.");
+          jogo.pocaoInstavel(d.estado);
+        });
+        ouvir("pocao_instavel.estabilizada", "remove o alerta e soma 3 poções", (d) => {
+          atualizar(d);
+          avisar(d.por + " estabilizou a poção: +3 poções!", "ok");
+          jogo.pocaoEstabilizada();
+        });
+        ouvir("pocao_instavel.expirada", "remove o alerta e avisa que a poção se perdeu", (d) => {
+          atualizar(d);
+          avisar("A poção instável expirou e se perdeu.", "erro");
+          jogo.pocaoExpirada();
+        });
+
         // ETAPA 6: ouvir "vila.encerrada"        -> jogo.vilaEncerrada()
-        ouvir("vila.encerrada", "escurece a vila e bloqueia novas ações", (d) => {
+        // Por quê: o encerramento vale para a vila inteira, não só para o Mestre
+        ouvir("vila.encerrada", "escurece a vila e para colheita, obras e prazos", (d) => {
           atualizar(d);
           avisar("Temporada encerrada.");
           jogo.vilaEncerrada();
@@ -365,14 +413,25 @@
       }
 
       // ===== PEDIDOS (emit): o cliente PEDE algo ao servidor =====
+      // Por quê: o cliente não muda o estado sozinho. Ele só pede; o servidor valida
+      // e responde com um FATO para todos ou com operacao.recusada só para quem pediu.
       // pedir(evento)
       function abrirVila() {
         // ETAPA 2: pedir "vila.abertura_solicitada"
         pedir("vila.abertura_solicitada");
       }
       function construir() {
-        // ETAPA 3: pedir "construcao.solicitada"
-        pedir("construcao.solicitada");
+        // ETAPA 3: pedir "laboratorio.construcao_solicitada"
+        pedir("laboratorio.construcao_solicitada");
+      }
+      function prepararInstavel() {
+        // Evento próprio: pede para gastar 20 ervas numa poção instável (o servidor decide)
+        pedir("pocao_instavel.preparo_solicitado");
+      }
+      function estabilizar() {
+        // Evento próprio: pede para estabilizar antes do prazo; se outro jogador chegar
+        // antes, o servidor recusa este pedido
+        pedir("pocao_instavel.estabilizacao_solicitada");
       }
       function encerrarVila() {
         // ETAPA 6: pedir "vila.encerramento_solicitado"
@@ -380,7 +439,7 @@
       }
 
       return { nome, papel, conectado, estado, avisos, eventosVisiveis, contadores, ocultarProducao, porMinuto,
-               entrar, abrirVila, construir, encerrarVila };
+               entrar, abrirVila, construir, prepararInstavel, estabilizar, encerrarVila };
     }
   }).mount("#app");
 </script>
